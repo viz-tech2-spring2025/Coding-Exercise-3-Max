@@ -128,7 +128,6 @@ const Scrollytelling = () => {
     };
 
     map.on('style.load', () => {
-      // Add a custom THREE.js layer (spinning cube) for visual flair.
       const threeLayer = {
         id: 'three-layer',
         type: 'custom',
