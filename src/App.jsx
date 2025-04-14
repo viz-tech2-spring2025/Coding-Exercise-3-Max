@@ -1,8 +1,20 @@
-import React, { useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import mapboxgl from "mapbox-gl";
 import * as THREE from "three";
 import { useInView } from "react-intersection-observer";
+import DeckGL from "@deck.gl/react";
+import { FlyToInterpolator } from "@deck.gl/core";
+import { Map } from "react-map-gl/mapbox";
 import "./App.css";
+import {
+  SF,
+  DENVER,
+  HONOLULU,
+  sfZipCodes,
+  denverZipCodes,
+  honoluluZipCodes,
+} from "./constant-variables";
+import { assignManualValue, flyToCity } from "./utils";
 
 // Importing GeoJson zip files for different states
 // TODO: Find county level geojson files
@@ -12,139 +24,12 @@ import hiZip from "./hi_hawaii_zip_codes_geo.min.json"; // Hawaii file (for Hono
 
 //Add an .env file and load your token from there.
 // Mapbox token here
-mapboxgl.accessToken =
+const MAPBOX_TOKEN =
   "pk.eyJ1Ijoic3BlbmNtYSIsImEiOiJjbTg5Nm94d28wMnpxMmxteG1ueXRwMTdnIn0.4vub8d3a64SRRTAbkus4Nw";
 
-// City configurations
-const SF = {
-  name: "San Francisco",
-  coords: [-122.4194, 37.7749],
-  zoom: 10,
-  pitch: 60,
-  bearing: -17.6,
-};
-
-const DENVER = {
-  name: "Denver",
-  coords: [-104.9903, 39.7392],
-  zoom: 10,
-  pitch: 60,
-  bearing: -17.6,
-};
-
-const HONOLULU = {
-  name: "Honolulu",
-  coords: [-157.8583, 21.3069],
-  zoom: 10,
-  pitch: 60,
-  bearing: -17.6,
-};
-
-// --- Dummy Zip Code Arrays ---
-// (These should be adjusted to match your actual data ranges.)
-// TODO: Replace this with the real data
-const sfZipCodes = [
-  "94112",
-  "94110",
-  "94122",
-  "94109",
-  "94116",
-  "94117",
-  "94118",
-  "94121",
-  "94134",
-  "94175",
-  "94124",
-  "94114",
-  "94102",
-  "94115",
-  "94103",
-  "94167",
-  "94131",
-  "94132",
-  "94107",
-  "94138",
-  "94165",
-  "94133",
-  "94166",
-  "94123",
-  "94106",
-  "94150",
-  "94152",
-  "94127",
-  "94168",
-  "94170",
-  "94105",
-  "94135",
-  "94108",
-  "94169",
-  "94158",
-  "94136",
-  "94155",
-  "94111",
-  "94129",
-  "94130",
-  "94104",
-  "94101",
-  "94153",
-  "94154",
-  "94156",
-  "94162",
-  "94171",
-  "94199",
-  "94157",
-  "94119",
-  "94120",
-  "94126",
-  "94137",
-  "94139",
-  "94141",
-  "94140",
-  "94143",
-  "94142",
-  "94145",
-  "94144",
-  "94147",
-  "94146",
-  "94151",
-  "94159",
-  "94161",
-  "94160",
-  "94163",
-  "94164",
-  "94172",
-  "94188",
-  "94177",
-];
-
-const denverZipCodes = [
-  "80202",
-  "80203",
-  "80204",
-  "80205",
-  "80206",
-  "80207",
-  "80209",
-];
-
-const honoluluZipCodes = ["96813", "96814", "96815", "96816", "96817", "96818"];
-
-// Helper: assign a dummy value based on zip code membership and last two digits.
-function assignManualValue(feature) {
-  const zip = feature.properties.ZCTA5CE10;
-  let value = 50;
-  if (sfZipCodes.includes(zip)) {
-    value = parseInt(zip.slice(-2)) * 10; // SF: last two digits * 10
-  } else if (denverZipCodes.includes(zip)) {
-    value = parseInt(zip.slice(-2)) * 5; // Denver: last two digits * 5
-  } else if (honoluluZipCodes.includes(zip)) {
-    value = parseInt(zip.slice(-2)) * 8; // Honolulu: last two digits * 8
-  }
-  feature.properties.value = value;
-  return feature;
-}
-
 const Scrollytelling = () => {
+  const [initialViewState, setInitialViewState] = useState(SF);
+
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   // Create a ref for the text column (scroll container)
@@ -156,6 +41,7 @@ const Scrollytelling = () => {
   const [refHonoluluSection, inViewHonoluluSection] = useInView({
     threshold: 0.5,
   });
+  const [mergeData, setMergedData] = useState([]);
 
   // Ensure the text column starts at the top on mount
   useEffect(() => {
@@ -164,18 +50,8 @@ const Scrollytelling = () => {
     }
   }, []);
 
+  //move this outside the App file and use fetch to add the data.
   useEffect(() => {
-    if (!mapContainerRef.current) return;
-    const map = new mapboxgl.Map({
-      container: mapContainerRef.current,
-      style: "mapbox://styles/mapbox/streets-v11",
-      center: SF.coords,
-      zoom: SF.zoom,
-      pitch: SF.pitch,
-      bearing: SF.bearing,
-    });
-    mapRef.current = map;
-
     // Process GeoJSON data for each region.
     const filteredSF = caZip.features
       .filter((feature) => sfZipCodes.includes(feature.properties.ZCTA5CE10))
@@ -195,89 +71,48 @@ const Scrollytelling = () => {
       type: "FeatureCollection",
       features: [...filteredSF, ...filteredDenver, ...filteredHonolulu],
     };
-
-    map.on("style.load", () => {
-      const threeLayer = {
-        id: "three-layer",
-        type: "custom",
-        renderingMode: "3d",
-        onAdd: function (map, gl) {
-          this.renderer = new THREE.WebGLRenderer({
-            canvas: map.getCanvas(),
-            context: gl,
-            antialias: true,
-          });
-        },
-        render: function (gl, matrix) {
-          const m = new THREE.Matrix4().fromArray(matrix);
-          this.camera.projectionMatrix = m;
-          this.cube.rotation.y += 0.01;
-          this.renderer.state.reset();
-          this.renderer.render(this.scene, this.camera);
-          map.triggerRepaint();
-        },
-      };
-      map.addLayer(threeLayer, "waterway-label");
-
-      // merged layers (geojson and the extrusions)
-      map.addSource("zipcode-extrusions", {
-        type: "geojson",
-        data: mergedGeoJSON,
-      });
-      map.addLayer({
-        id: "zipcode-extrusions-layer",
-        type: "fill-extrusion",
-        source: "zipcode-extrusions",
-        paint: {
-          "fill-extrusion-height": ["coalesce", ["get", "value"], 50],
-          "fill-extrusion-base": 0,
-          "fill-extrusion-opacity": 0.8,
-          "fill-extrusion-color": [
-            "interpolate",
-            ["linear"],
-            ["get", "value"],
-            0,
-            "#ff8c00",
-            200,
-            "#ff0080",
-          ],
-        },
-      });
-    });
-
-    return () => map.remove();
+    setMergedData(mergedGeoJSON);
   }, []);
 
-  // existing flyto logic
+  // useEffect(() => {
+  //   // const map = mapRef.current;
+  //   // if (!map) return;
+  //   // if (inViewSFSection) {
+  //   //   map.flyTo({
+  //   //     center: SF.coords,
+  //   //     zoom: SF.zoom,
+  //   //     pitch: SF.pitch,
+  //   //     bearing: SF.bearing,
+  //   //     speed: 0.5,
+  //   //   });
+  //   // } else if (inViewDenverSection) {
+  //   //   map.flyTo({
+  //   //     center: DENVER.coords,
+  //   //     zoom: DENVER.zoom,
+  //   //     pitch: DENVER.pitch,
+  //   //     bearing: DENVER.bearing,
+  //   //     speed: 0.5,
+  //   //   });
+  //   // } else if (inViewHonoluluSection) {
+  //   //   map.flyTo({
+  //   //     center: HONOLULU.coords,
+  //   //     zoom: HONOLULU.zoom,
+  //   //     pitch: HONOLULU.pitch,
+  //   //     bearing: HONOLULU.bearing,
+  //   //     speed: 0.5,
+  //   //   });
+  //   // }
+  // }, [inViewSFSection, inViewDenverSection, inViewHonoluluSection]);
+
+  //call flytocity function from utils
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    if (inViewSFSection) {
-      map.flyTo({
-        center: SF.coords,
-        zoom: SF.zoom,
-        pitch: SF.pitch,
-        bearing: SF.bearing,
-        speed: 0.5,
-      });
-    } else if (inViewDenverSection) {
-      map.flyTo({
-        center: DENVER.coords,
-        zoom: DENVER.zoom,
-        pitch: DENVER.pitch,
-        bearing: DENVER.bearing,
-        speed: 0.5,
-      });
-    } else if (inViewHonoluluSection) {
-      map.flyTo({
-        center: HONOLULU.coords,
-        zoom: HONOLULU.zoom,
-        pitch: HONOLULU.pitch,
-        bearing: HONOLULU.bearing,
-        speed: 0.5,
-      });
-    }
+    if (inViewSFSection) flyToCity(SF, setInitialViewState);
+    else if (inViewDenverSection) flyToCity(DENVER, setInitialViewState);
+    else if (inViewHonoluluSection) flyToCity(HONOLULU, setInitialViewState);
   }, [inViewSFSection, inViewDenverSection, inViewHonoluluSection]);
+
+  //add map layers
+  const layers = [];
 
   return (
     <div className="scrollytelling-container">
@@ -318,6 +153,14 @@ const Scrollytelling = () => {
       </div>
       <div className="map-column">
         <div ref={mapContainerRef} className="map-container" />
+        <DeckGL layers={layers} initialViewState={initialViewState} controller>
+          <Map
+            logoPosition="bottom-right"
+            attributionControl={false}
+            mapStyle="mapbox://styles/mapbox/streets-v11"
+            mapboxAccessToken={MAPBOX_TOKEN}
+          />
+        </DeckGL>
       </div>
     </div>
   );
